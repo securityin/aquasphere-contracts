@@ -4,6 +4,7 @@ use ink_lang as ink;
 
 #[ink::contract]
 mod entropy {
+    use ink_prelude::string::String;
 
     #[cfg(not(feature = "ink-as-dependency"))]
     use ink_storage::{
@@ -16,11 +17,16 @@ mod entropy {
     /// to add new static storage fields to your contract.
     #[ink(storage)]
     pub struct Entropy {
+        name: String,
+        symbol: String,
+        decimals: u32,
+
         /// Total token supply.
         total_supply: Lazy<Balance>,
 
         /// Mapping from owner to number of owned token.
         balances: StorageHashMap<AccountId, Balance>,
+
         /// Mapping of the token amount which an account is allowed to withdraw
         /// from another account.
         allowances: StorageHashMap<(AccountId, AccountId), Balance>,
@@ -66,12 +72,15 @@ mod entropy {
 
         /// Creates a new Entropy contract with the specified initial supply
         #[ink(constructor)]
-        pub fn new(initial_supply: Balance) -> Self {
+        pub fn construct(initial_supply: Balance, name: String, symbol: String, decimals: u32) -> Self {
             let caller = Self::env().caller();
             let mut balances = StorageHashMap::new();
             balances.insert(caller, initial_supply);
             let instance = Self {
                 total_supply: Lazy::new(initial_supply),
+                name: name.clone(),
+                symbol: symbol.clone(),
+                decimals,
                 balances,
                 allowances: StorageHashMap::new(),
             };
@@ -81,6 +90,31 @@ mod entropy {
                 value: initial_supply,
             });
             instance
+        }
+
+        #[ink(constructor)]
+        pub fn new(initial_supply: Balance) -> Self {
+            Entropy::construct(initial_supply, "Entropy Coin".into(), "ENT".into(), 6)
+        }
+
+        #[ink(constructor)]
+        pub fn default() -> Self {
+            Entropy::construct(1_000_000_000_000, "Entropy Coin".into(), "ENT".into(), 6)
+        }
+
+        #[ink(message)]
+        pub fn name(&self) -> String {
+            self.name.clone()
+        }
+
+        #[ink(message)]
+        pub fn symbol(&self) -> String {
+            self.symbol.clone()
+        }
+
+        #[ink(message)]
+        pub fn decimals(&self) -> u32 {
+            self.decimals
         }
 
         /// Returns the total token supply.
@@ -282,6 +316,32 @@ mod entropy {
                 Some(AccountId::from([0x01; 32])),
                 100,
             );
+        }
+
+        #[ink::test]
+        fn default_works() {
+            let entropy = Entropy::default();
+
+            let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
+            assert_eq!(1, emitted_events.len());
+
+            // default values
+            let default_decimals = 6;
+            let default_initial_supply :u128 = u128::pow(10, default_decimals) * 1_000_000;
+            let default_name = "Entropy Coin";
+            let default_symbol = "ENT";
+
+            assert_transfer_event(
+                &emitted_events[0],
+                None,
+                Some(AccountId::from([0x01; 32])),
+                default_initial_supply,
+            );
+            
+            assert_eq!(entropy.total_supply(), default_initial_supply);
+            assert_eq!(entropy.name(), default_name);
+            assert_eq!(entropy.symbol(), default_symbol);
+            assert_eq!(entropy.decimals(), default_decimals);
         }
 
         /// The total supply was applied.
