@@ -4,9 +4,13 @@ use ink_lang as ink;
 
 #[ink::contract]
 mod entropy {
-    use ink_prelude::string::String;
+    use ink_env as env;
 
-    #[cfg(not(feature = "ink-as-dependency"))]
+    use ink_prelude::{
+        format,
+        string::String
+    };
+
     use ink_storage::{
         collections::HashMap as StorageHashMap,
         lazy::Lazy,
@@ -20,6 +24,8 @@ mod entropy {
         name: String,
         symbol: String,
         decimals: u32,
+
+        owner: AccountId,
 
         /// Total token supply.
         total_supply: Lazy<Balance>,
@@ -54,11 +60,27 @@ mod entropy {
         #[ink(topic)]
         value: Balance,
     }
+
+    /// Event emitted when new tokens are issued
+    #[ink(event)]
+    pub struct Issue {
+        #[ink(topic)]
+        amount: Balance
+    }
     
+    /// Event emitted when new tokens are redeemed
+    #[ink(event)]
+    pub struct Redeem {
+        #[ink(topic)]
+        amount: Balance
+    }
+
     /// Entropy error types.
     #[derive(Debug, PartialEq, Eq, scale::Encode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub enum Error {
+        /// Returned if not privileged.
+        PermissionDenied,
         /// Returned if not enough balance to fulfill a request is available.
         InsufficientBalance,
         /// Returned if not enough allowance to fulfill a request is available.
@@ -70,9 +92,11 @@ mod entropy {
 
     impl Entropy {
 
-        /// Creates a new Entropy contract with the specified initial supply
+        /// Creates a new Entropy contract with the specified initial supply, name, symbol and decimals.
         #[ink(constructor)]
         pub fn construct(initial_supply: Balance, name: String, symbol: String, decimals: u32) -> Self {
+            env::debug_println(&format!("Entropy: Construct with initial_supply: 0x{:x}, name: {}, symbol: {}, decimals: 0x{:x}", initial_supply, &name, &symbol, decimals));
+
             let caller = Self::env().caller();
             let mut balances = StorageHashMap::new();
             balances.insert(caller, initial_supply);
@@ -80,6 +104,7 @@ mod entropy {
                 total_supply: Lazy::new(initial_supply),
                 name: name.clone(),
                 symbol: symbol.clone(),
+                owner: caller,
                 decimals,
                 balances,
                 allowances: StorageHashMap::new(),
@@ -92,29 +117,40 @@ mod entropy {
             instance
         }
 
+        /// Creates a new Entropy contract with the specified initial supply and default name, symbol and decimals.
         #[ink(constructor)]
         pub fn new(initial_supply: Balance) -> Self {
             Entropy::construct(initial_supply, "Entropy Coin".into(), "ENT".into(), 6)
         }
 
+        /// Creates a new Entropy contract with default initial supply, name, symbol and decimals.
         #[ink(constructor)]
         pub fn default() -> Self {
             Entropy::construct(1_000_000_000_000, "Entropy Coin".into(), "ENT".into(), 6)
         }
 
+        /// Returns the token name.
         #[ink(message)]
         pub fn name(&self) -> String {
             self.name.clone()
         }
 
+        /// Returns the token symbol.
         #[ink(message)]
         pub fn symbol(&self) -> String {
             self.symbol.clone()
         }
 
+        /// Returns the token decimals.
         #[ink(message)]
         pub fn decimals(&self) -> u32 {
             self.decimals
+        }
+
+        /// Returns the contract owner.
+        #[ink(message)]
+        pub fn owner(&self) -> AccountId {
+            self.owner
         }
 
         /// Returns the total token supply.
@@ -192,6 +228,8 @@ mod entropy {
             to: AccountId,
             value: Balance,
         ) -> Result<()> {
+            env::debug_println(&format!("Entropy: Trying to transfer 0x{:x} tokens from {:?} to {:?}", value, from, to));
+
             let caller = self.env().caller();
             let allowance = self.allowance(from, caller);
             if allowance < value {
@@ -216,6 +254,8 @@ mod entropy {
             to: AccountId,
             value: Balance,
         ) -> Result<()> {
+            env::debug_println(&format!("Entropy: Transferring 0x{:x} tokens from {:?} to {:?}", value, from, to));
+
             let from_balance = self.balance_of(from);
             if from_balance < value {
                 return Err(Error::InsufficientBalance)
@@ -228,6 +268,73 @@ mod entropy {
                 to: Some(to),
                 value,
             });
+            Ok(())
+        }
+
+         /// Issues `value` amount of tokens to contract owner's account. Only contract owner is allowed to call this function.
+        /// 
+        /// On success a `Issue` event is emitted.
+        /// 
+        /// # Errors
+        /// 
+        /// Returns `PermissionDenied` error if caller is not the owner.
+        #[ink(message)]
+        pub fn issue(&mut self, value: Balance) -> Result<()> {
+            env::debug_println(&format!("Entropy: Issuing 0x{:x} tokens to owner account", value));
+
+            let caller = self.env().caller();
+            if caller != self.owner {
+                return Err(Error::PermissionDenied);
+            }
+
+            let balance = self.balance_of(self.owner);
+            self.balances.insert(self.owner, balance + value);
+
+            let total_supply = &mut self.total_supply;
+            let current_supply = Lazy::<Balance>::get(total_supply);
+            let new_supply = current_supply + value;
+            Lazy::<Balance>::set(total_supply, new_supply);
+
+            self.env().emit_event(Issue {
+                amount: value
+            });
+
+            Ok(())
+        }
+
+        /// Redeem `value` amount of tokens from contract owner's account. Only contract owner is allowed to call this function.
+        /// 
+        /// On success a `Redeem` event is emitted.
+        /// 
+        /// # Errors
+        /// 
+        /// Returns `PermissionDenied` error if caller is not the owner.
+        /// Returns `InsufficientBalance` error if owner's balance is insufficient.
+        #[ink(message)]
+        pub fn redeem(&mut self, value: Balance) -> Result<()> {
+            env::debug_println(&format!("Entropy: Redeeming 0x{:x} tokens from owner account", value));
+
+            let caller = self.env().caller();
+            if caller != self.owner {
+                return Err(Error::PermissionDenied);
+            }
+
+            let balance = self.balance_of(self.owner);
+            if balance < value {
+                return Err(Error::InsufficientBalance);
+            }
+
+            self.balances.insert(self.owner, balance - value);
+
+            let total_supply = &mut self.total_supply;
+            let current_supply = Lazy::<Balance>::get(total_supply);
+            let new_supply = current_supply - value;
+            Lazy::<Balance>::set(total_supply, new_supply);
+
+            self.env().emit_event(Redeem {
+                amount: value
+            });
+
             Ok(())
         }
     }
@@ -288,6 +395,96 @@ mod entropy {
                 encoded_into_hash(b"Entropy::Transfer"),
                 encoded_into_hash(&expected_from),
                 encoded_into_hash(&expected_to),
+                encoded_into_hash(&expected_value),
+            ];
+            for (n, (actual_topic, expected_topic)) in
+                event.topics.iter().zip(expected_topics).enumerate()
+            {
+                let topic = actual_topic
+                    .decode::<Hash>()
+                    .expect("encountered invalid topic encoding");
+                assert_eq!(topic, expected_topic, "encountered invalid topic at {}", n);
+            }
+        }
+
+        fn assert_issue_event(
+            event: &ink_env::test::EmittedEvent,
+            expected_value: Balance,
+        ) {
+            let decoded_event = <Event as scale::Decode>::decode(&mut &event.data[..])
+                .expect("encountered invalid contract event data buffer");
+            if let Event::Issue(Issue { amount }) = decoded_event {
+                assert_eq!(amount, expected_value, "encountered invalid Issue.amount");
+            } else {
+                panic!("encountered unexpected event kind: expected an Issue event")
+            }
+
+            fn encoded_into_hash<T>(entity: &T) -> Hash
+            where
+                T: scale::Encode,
+            {
+                let mut result = Hash::clear();
+                let len_result = result.as_ref().len();
+                let encoded = entity.encode();
+                let len_encoded = encoded.len();
+                if len_encoded <= len_result {
+                    result.as_mut()[..len_encoded].copy_from_slice(&encoded);
+                    return result
+                }
+                let mut hash_output =
+                    <<Blake2x256 as HashOutput>::Type as Default>::default();
+                <Blake2x256 as CryptoHash>::hash(&encoded, &mut hash_output);
+                let copy_len = core::cmp::min(hash_output.len(), len_result);
+                result.as_mut()[0..copy_len].copy_from_slice(&hash_output[0..copy_len]);
+                result
+            }
+            let expected_topics = vec![
+                encoded_into_hash(b"Entropy::Issue"),
+                encoded_into_hash(&expected_value),
+            ];
+            for (n, (actual_topic, expected_topic)) in
+                event.topics.iter().zip(expected_topics).enumerate()
+            {
+                let topic = actual_topic
+                    .decode::<Hash>()
+                    .expect("encountered invalid topic encoding");
+                assert_eq!(topic, expected_topic, "encountered invalid topic at {}", n);
+            }
+        }
+
+        fn assert_redeem_event(
+            event: &ink_env::test::EmittedEvent,
+            expected_value: Balance,
+        ) {
+            let decoded_event = <Event as scale::Decode>::decode(&mut &event.data[..])
+                .expect("encountered invalid contract event data buffer");
+            if let Event::Redeem(Redeem { amount }) = decoded_event {
+                assert_eq!(amount, expected_value, "encountered invalid Redeem.amount");
+            } else {
+                panic!("encountered unexpected event kind: expected a Redeem event")
+            }
+
+            fn encoded_into_hash<T>(entity: &T) -> Hash
+            where
+                T: scale::Encode,
+            {
+                let mut result = Hash::clear();
+                let len_result = result.as_ref().len();
+                let encoded = entity.encode();
+                let len_encoded = encoded.len();
+                if len_encoded <= len_result {
+                    result.as_mut()[..len_encoded].copy_from_slice(&encoded);
+                    return result
+                }
+                let mut hash_output =
+                    <<Blake2x256 as HashOutput>::Type as Default>::default();
+                <Blake2x256 as CryptoHash>::hash(&encoded, &mut hash_output);
+                let copy_len = core::cmp::min(hash_output.len(), len_result);
+                result.as_mut()[0..copy_len].copy_from_slice(&hash_output[0..copy_len]);
+                result
+            }
+            let expected_topics = vec![
+                encoded_into_hash(b"Entropy::Redeem"),
                 encoded_into_hash(&expected_value),
             ];
             for (n, (actual_topic, expected_topic)) in
@@ -569,6 +766,83 @@ mod entropy {
                 ink_env::test::recorded_events().collect::<Vec<_>>();
             assert_eq!(emitted_events_before.len(), emitted_events_after.len());
         }
+
+        #[ink::test]
+        fn issue_works() {
+            // Constructor works.
+            let mut entropy = Entropy::new(100);
+
+            // Transfer event triggered during initial construction.
+            let accounts =
+                ink_env::test::default_accounts::<ink_env::DefaultEnvironment>()
+                    .expect("Cannot get accounts");
+
+            assert_eq!(entropy.balance_of(accounts.alice), 100);
+
+            // Issue 100 more tokens
+            assert_eq!(entropy.issue(100), Ok(()));
+
+            // Check total supply
+            assert_eq!(entropy.total_supply(), 200);
+
+            // Check Alice's new balance
+            assert_eq!(entropy.balance_of(accounts.alice), 200);
+
+            let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
+            assert_eq!(emitted_events.len(), 2);
+
+            // Check first transfer event related to Entropy instantiation.
+            assert_transfer_event(
+                &emitted_events[0],
+                None,
+                Some(AccountId::from([0x01; 32])),
+                100,
+            );
+            // Check second Issue event
+            assert_issue_event(
+                &emitted_events[1],
+                100,
+            );
+        }
+
+        #[ink::test]
+        fn redeem_works() {
+            // Constructor works.
+            let mut entropy = Entropy::new(100);
+
+            // Transfer event triggered during initial construction.
+            let accounts =
+                ink_env::test::default_accounts::<ink_env::DefaultEnvironment>()
+                    .expect("Cannot get accounts");
+
+            assert_eq!(entropy.balance_of(accounts.alice), 100);
+
+            // Redeem 50 tokens
+            assert_eq!(entropy.redeem(50), Ok(()));
+
+            // Check total supply
+            assert_eq!(entropy.total_supply(), 50);
+
+            // Check Alice's new balance
+            assert_eq!(entropy.balance_of(accounts.alice), 50);
+
+            let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
+            assert_eq!(emitted_events.len(), 2);
+
+            // Check first transfer event related to Entropy instantiation.
+            assert_transfer_event(
+                &emitted_events[0],
+                None,
+                Some(AccountId::from([0x01; 32])),
+                100,
+            );
+            // Check second Redeem event
+            assert_redeem_event(
+                &emitted_events[1],
+                50,
+            );
+        }
+
     }
 
 }
