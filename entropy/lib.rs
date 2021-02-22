@@ -194,6 +194,15 @@ mod entropy {
             self.allowances.get(&(owner, spender)).copied().unwrap_or(0)
         }
 
+        /// Transfer ownership to another account
+        #[ink(message)]
+        pub fn transfer_ownership(&mut self, new_owner: AccountId) -> Result<()> {
+            if new_owner != AccountId::from([0x0; 32]) {
+                self.owner = new_owner.clone();
+            }
+            Ok(())
+        }
+
         /// Transfers `value` amount of tokens from the caller's account to account `to`.
         ///
         /// On success a `Transfer` event is emitted.
@@ -612,6 +621,28 @@ mod entropy {
             assert_eq!(entropy.balance_of(accounts.alice), 100);
             // Bob does not owns tokens
             assert_eq!(entropy.balance_of(accounts.bob), 0);
+        }
+
+        #[ink::test]
+        fn transfer_ownership_works() {
+            // Constructor works.
+            let mut entropy = Entropy::new(100);
+
+            // Transfer event triggered during initial construction.
+            let accounts =
+                ink_env::test::default_accounts::<ink_env::DefaultEnvironment>()
+                    .expect("Cannot get accounts");
+
+            assert_eq!(entropy.balance_of(accounts.alice), 100);
+
+            // Assert owner is alice
+            assert_eq!(entropy.owner(), accounts.alice);
+
+            // Transfer ownership to bob
+            assert_eq!(entropy.transfer_ownership(accounts.bob), Ok(()));
+
+            // Assert new owner is bob
+            assert_eq!(entropy.owner(), accounts.bob);
         }
 
         #[ink::test]
