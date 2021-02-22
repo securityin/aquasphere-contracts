@@ -4,6 +4,8 @@ use ink_lang as ink;
 
 #[ink::contract]
 mod entropy {
+    use core::fmt;
+
     use ink_env as env;
 
     use ink_prelude::{
@@ -75,6 +77,13 @@ mod entropy {
         amount: Balance
     }
 
+    /// Event emitted when error occurs
+    #[ink(event)]
+    pub struct TransactionFailed {
+        #[ink(topic)]
+        error: String
+    }
+
     /// Entropy error types.
     #[derive(Debug, PartialEq, Eq, scale::Encode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
@@ -85,6 +94,16 @@ mod entropy {
         InsufficientBalance,
         /// Returned if not enough allowance to fulfill a request is available.
         InsufficientAllowance,
+    }
+
+    impl fmt::Display for Error {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            match *self {
+                Self::PermissionDenied => write!(f, "PermissionDenied"),
+                Self::InsufficientBalance => write!(f, "InsufficientBalance"),
+                Self::InsufficientAllowance => write!(f, "InsufficientAllowance")
+            }
+        }
     }
 
     /// Entropy result type.
@@ -233,6 +252,9 @@ mod entropy {
             let caller = self.env().caller();
             let allowance = self.allowance(from, caller);
             if allowance < value {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::InsufficientAllowance)
+                });
                 return Err(Error::InsufficientAllowance)
             }
             self.transfer_from_to(from, to, value)?;
@@ -258,6 +280,9 @@ mod entropy {
 
             let from_balance = self.balance_of(from);
             if from_balance < value {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::InsufficientBalance)
+                });
                 return Err(Error::InsufficientBalance)
             }
             self.balances.insert(from, from_balance - value);
@@ -284,6 +309,9 @@ mod entropy {
 
             let caller = self.env().caller();
             if caller != self.owner {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::PermissionDenied)
+                });
                 return Err(Error::PermissionDenied);
             }
 
@@ -316,11 +344,17 @@ mod entropy {
 
             let caller = self.env().caller();
             if caller != self.owner {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::PermissionDenied)
+                });
                 return Err(Error::PermissionDenied);
             }
 
             let balance = self.balance_of(self.owner);
             if balance < value {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::InsufficientBalance)
+                });
                 return Err(Error::InsufficientBalance);
             }
 
@@ -650,7 +684,7 @@ mod entropy {
 
             // Transfer event triggered during initial construction.
             let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
-            assert_eq!(emitted_events.len(), 1);
+            assert_eq!(emitted_events.len(), 2);
             assert_transfer_event(
                 &emitted_events[0],
                 None,
@@ -677,7 +711,7 @@ mod entropy {
             assert_eq!(entropy.approve(accounts.bob, 10), Ok(()));
 
             // The approve event takes place.
-            assert_eq!(ink_env::test::recorded_events().count(), 2);
+            assert_eq!(ink_env::test::recorded_events().count(), 3);
 
             // Get contract address.
             let callee = ink_env::account_id::<ink_env::DefaultEnvironment>()
@@ -705,16 +739,16 @@ mod entropy {
 
             // Check all transfer events that happened during the previous calls:
             let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
-            assert_eq!(emitted_events.len(), 3);
+            assert_eq!(emitted_events.len(), 4);
             assert_transfer_event(
                 &emitted_events[0],
                 None,
                 Some(AccountId::from([0x01; 32])),
                 100,
             );
-            // The second event `emitted_events[1]` is an Approve event that we skip checking.
+            // The last event `emitted_events[3]` is an Approve event that we skip checking.
             assert_transfer_event(
-                &emitted_events[2],
+                &emitted_events[3],
                 Some(AccountId::from([0x01; 32])),
                 Some(AccountId::from([0x05; 32])),
                 10,
@@ -761,10 +795,10 @@ mod entropy {
                 entropy.allowance(accounts.alice, accounts.bob),
                 initial_allowance
             );
-            // No more events must have been emitted
+            // One more failed event has been emitted
             let emitted_events_after =
                 ink_env::test::recorded_events().collect::<Vec<_>>();
-            assert_eq!(emitted_events_before.len(), emitted_events_after.len());
+            assert_eq!(emitted_events_before.len() + 1, emitted_events_after.len());
         }
 
         #[ink::test]
