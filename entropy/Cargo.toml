@@ -1,6 +1,6 @@
 [package]
 name = "entropy"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Gavin Fu <gavfu@outlook.com>"]
 edition = "2018"
 
@@ -35,3 +35,6 @@ std = [
     "scale-info/std",
 ]
 ink-as-dependency = []
+
+[profile.release]
+overflow-checks = false

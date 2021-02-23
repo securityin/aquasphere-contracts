@@ -27,6 +27,10 @@ mod entropy {
         symbol: String,
         decimals: u32,
 
+        /// Additional params for use if contract level transaction fees ever became necessary
+        basis_points_rate: u128, // e.g: '5' means 0.0005 rate
+        maximum_fee: u128,  // e.g: '50_000_000' means maximal 50 ENT fee per trasaction
+
         owner: AccountId,
 
         /// Total token supply.
@@ -40,19 +44,29 @@ mod entropy {
         allowances: StorageHashMap<(AccountId, AccountId), Balance>,
 
         /// Mapping of whether an account is private
-        accounts_private: StorageHashMap<AccountId, bool>
+        accounts_private: StorageHashMap<AccountId, bool>,
     }
 
-     /// Event emitted when a token transfer occurs.
-     #[ink(event)]
-     pub struct Transfer {
-         #[ink(topic)]
-         from: Option<AccountId>,
-         #[ink(topic)]
-         to: Option<AccountId>,
-         #[ink(topic)]
-         value: Balance,
-     }
+    
+    /// Event emitted when params are set.
+    #[ink(event)]
+    pub struct Params {
+        #[ink(topic)]
+        basis_points_rate: u128,
+        #[ink(topic)]
+        maximum_fee: u128
+    }
+
+    /// Event emitted when a token transfer occurs.
+    #[ink(event)]
+    pub struct Transfer {
+        #[ink(topic)]
+        from: Option<AccountId>,
+        #[ink(topic)]
+        to: Option<AccountId>,
+        #[ink(topic)]
+        value: Balance,
+    }
 
     /// Event emitted when an approval occurs that `spender` is allowed to withdraw
     /// up to the amount of `value` tokens from `owner`.
@@ -135,6 +149,8 @@ mod entropy {
                 total_supply: Lazy::new(initial_supply),
                 name: name.clone(),
                 symbol: symbol.clone(),
+                basis_points_rate: 0,
+                maximum_fee: 0,
                 owner: caller,
                 decimals,
                 balances,
@@ -177,6 +193,32 @@ mod entropy {
         #[ink(message)]
         pub fn decimals(&self) -> u32 {
             self.decimals
+        }
+
+        /// Returns contract level transaction fee basic points rate (*/10000)
+        #[ink(message)]
+        pub fn basis_points_rate(&self) -> u128 {
+            self.basis_points_rate
+        }
+
+        /// Returns contract level maximum fee per transaction
+        #[ink(message)]
+        pub fn maximum_fee(&self) -> u128 {
+            self.maximum_fee
+        }
+
+        /// Set contract level transaction fee params
+        #[ink(message)]
+        pub fn set_params(&mut self, new_basic_points: u128, new_max_fee: u128) -> Result<()> {
+            self.basis_points_rate = if new_basic_points > 20 { 20 } else { new_basic_points };
+            self.maximum_fee = if new_max_fee > 50_000_000 { 50_000_000 } else { new_max_fee };
+
+            self.env().emit_event(Params {
+                basis_points_rate: self.basis_points_rate,
+                maximum_fee: self.maximum_fee
+            });
+
+            Ok(())
         }
 
         /// Returns the contract owner.
@@ -315,13 +357,33 @@ mod entropy {
                 });
                 return Err(Error::InsufficientBalance)
             }
+
+            let mut fee = 0;
+            if self.basis_points_rate > 0 {
+                // let init_fee = value.checked_mul(Balance::from(self.basis_points_rate)).unwrap_or(Balance::from(0u128)).checked_div(Balance::from(10000u128)).unwrap_or(Balance::from(0u128));
+                let init_fee = value * self.basis_points_rate / 10000;
+                fee = if init_fee > self.maximum_fee { self.maximum_fee } else { init_fee };
+            }
+            let send_value = value - fee;
+
             self.balances.insert(from, from_balance - value);
             let to_balance = self.balance_of(to);
-            self.balances.insert(to, to_balance + value);
+            self.balances.insert(to, to_balance + send_value);
+
+            if fee > 0 {
+                let owner_balance = self.balance_of(self.owner);
+                self.balances.insert(self.owner, owner_balance + fee);
+                self.env().emit_event(Transfer {
+                    from: Some(from),
+                    to: Some(self.owner),
+                    value: fee
+                });
+            }
+
             self.env().emit_event(Transfer {
                 from: Some(from),
                 to: Some(to),
-                value,
+                value: send_value,
             });
             Ok(())
         }
@@ -750,33 +812,59 @@ mod entropy {
         #[ink::test]
         fn transfer_works() {
             // Constructor works.
-            let mut entropy = Entropy::new(100);
+            let mut entropy = Entropy::new(100_000_000);
             // Transfer event triggered during initial construction.
             let accounts =
                 ink_env::test::default_accounts::<ink_env::DefaultEnvironment>()
                     .expect("Cannot get accounts");
 
             assert_eq!(entropy.balance_of(accounts.bob), 0);
-            // Alice transfers 10 tokens to Bob.
-            assert_eq!(entropy.transfer(accounts.bob, 10), Ok(()));
-            // Bob owns 10 tokens.
-            assert_eq!(entropy.balance_of(accounts.bob), 10);
+            // Alice transfers 20_000_000 tokens to Bob.
+            assert_eq!(entropy.transfer(accounts.bob, 20_000_000), Ok(()));
+            // Bob owns 20_000_000 tokens.
+            assert_eq!(entropy.balance_of(accounts.bob), 20_000_000);
+            // Alice remains 80_000_000 tokens.
+            assert_eq!(entropy.balance_of(accounts.alice), 80_000_000);
+
+            // Set transaction fee
+            assert_eq!(entropy.set_params(10, 50_000_000), Ok(()));
+            // Bob transfers 10_000_000 tokens to Charlie. Fee is 10_000_000 * 10 / 10000 = 10_000,
+            // so 9_990_000 tokens transferred to Charlie, 10_000 tokens transferred to Alice, who is the contract owner
+            assert_eq!(entropy.transfer_from_to(accounts.bob, accounts.charlie, 10_000_000), Ok(()));
+            assert_eq!(entropy.balance_of(accounts.bob), 10_000_000);
+            assert_eq!(entropy.balance_of(accounts.charlie), 10_000_000 - 10_000);
+            assert_eq!(entropy.balance_of(accounts.alice), 80_000_000 + 10_000);
+            
 
             let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
-            assert_eq!(emitted_events.len(), 2);
+            assert_eq!(emitted_events.len(), 5);
             // Check first transfer event related to Entropy instantiation.
             assert_transfer_event(
                 &emitted_events[0],
                 None,
-                Some(AccountId::from([0x01; 32])),
-                100,
+                Some(accounts.alice),
+                100_000_000,
             );
             // Check the second transfer event relating to the actual trasfer.
             assert_transfer_event(
                 &emitted_events[1],
-                Some(AccountId::from([0x01; 32])),
-                Some(AccountId::from([0x02; 32])),
-                10,
+                Some(accounts.alice),
+                Some(accounts.bob),
+                20_000_000,
+            );
+            // Check the 4th fee transfer event (3rd event is the Params event)
+            assert_transfer_event(
+                &emitted_events[3],
+                Some(accounts.bob),
+                Some(accounts.alice),
+                10_000,
+            );
+            // Check the 5th transfer event to Charlie
+            assert_transfer_event(
+                &emitted_events[4],
+                Some(accounts.bob),
+                Some(accounts.charlie),
+                10_000_000 - 10_000,
             );
         }
 
