@@ -38,6 +38,9 @@ mod entropy {
         /// Mapping of the token amount which an account is allowed to withdraw
         /// from another account.
         allowances: StorageHashMap<(AccountId, AccountId), Balance>,
+
+        /// Mapping of whether an account is private
+        accounts_private: StorageHashMap<AccountId, bool>
     }
 
      /// Event emitted when a token transfer occurs.
@@ -75,6 +78,15 @@ mod entropy {
     pub struct Redeem {
         #[ink(topic)]
         amount: Balance
+    }
+
+    /// Event emitted when an account's privacy is updated
+    #[ink(event)]
+    pub struct Privacy {
+        #[ink(topic)]
+        account: AccountId,
+        #[ink(topic)]
+        private: bool
     }
 
     /// Event emitted when error occurs
@@ -127,6 +139,7 @@ mod entropy {
                 decimals,
                 balances,
                 allowances: StorageHashMap::new(),
+                accounts_private: StorageHashMap::new()
             };
             Self::env().emit_event(Transfer {
                 from: None,
@@ -313,7 +326,7 @@ mod entropy {
             Ok(())
         }
 
-         /// Issues `value` amount of tokens to contract owner's account. Only contract owner is allowed to call this function.
+        /// Issues `value` amount of tokens to contract owner's account. Only contract owner is allowed to call this function.
         /// 
         /// On success a `Issue` event is emitted.
         /// 
@@ -387,6 +400,39 @@ mod entropy {
             });
 
             Ok(())
+        }
+
+        /// Set whether an account is private or not
+        /// 
+        /// On success a `Privacy` event is emitted.
+        /// 
+        /// # Errors
+        /// 
+        /// Returns `PermissionDenied` error if caller is not the owner.
+        #[ink(message)]
+        pub fn set_account_private(&mut self, account: AccountId, private: bool) -> Result<()> {
+            let caller = self.env().caller();
+            if caller != self.owner {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::PermissionDenied)
+                });
+                return Err(Error::PermissionDenied);
+            }
+
+            self.accounts_private.insert(account, private);
+
+            self.env().emit_event(Privacy {
+                account,
+                private
+            });
+
+            Ok(())
+        }
+
+        /// Returns whether an account is private
+        #[ink(message)]
+        pub fn is_account_private(&self, account: AccountId) -> bool {
+            self.accounts_private.get(&account).copied().unwrap_or(false)
         }
     }
 
@@ -537,6 +583,54 @@ mod entropy {
             let expected_topics = vec![
                 encoded_into_hash(b"Entropy::Redeem"),
                 encoded_into_hash(&expected_value),
+            ];
+            for (n, (actual_topic, expected_topic)) in
+                event.topics.iter().zip(expected_topics).enumerate()
+            {
+                let topic = actual_topic
+                    .decode::<Hash>()
+                    .expect("encountered invalid topic encoding");
+                assert_eq!(topic, expected_topic, "encountered invalid topic at {}", n);
+            }
+        }
+
+        fn assert_privacy_event(
+            event: &ink_env::test::EmittedEvent,
+            expected_account: AccountId,
+            expected_private: bool,
+        ) {
+            let decoded_event = <Event as scale::Decode>::decode(&mut &event.data[..])
+                .expect("encountered invalid contract event data buffer");
+            if let Event::Privacy(Privacy { account, private }) = decoded_event {
+                assert_eq!(account, expected_account, "encountered invalid Privacy.account");
+                assert_eq!(private, expected_private, "encountered invalid Privacy.private");
+            } else {
+                panic!("encountered unexpected event kind: expected a Privacy event")
+            }
+
+            fn encoded_into_hash<T>(entity: &T) -> Hash
+            where
+                T: scale::Encode,
+            {
+                let mut result = Hash::clear();
+                let len_result = result.as_ref().len();
+                let encoded = entity.encode();
+                let len_encoded = encoded.len();
+                if len_encoded <= len_result {
+                    result.as_mut()[..len_encoded].copy_from_slice(&encoded);
+                    return result
+                }
+                let mut hash_output =
+                    <<Blake2x256 as HashOutput>::Type as Default>::default();
+                <Blake2x256 as CryptoHash>::hash(&encoded, &mut hash_output);
+                let copy_len = core::cmp::min(hash_output.len(), len_result);
+                result.as_mut()[0..copy_len].copy_from_slice(&hash_output[0..copy_len]);
+                result
+            }
+            let expected_topics = vec![
+                encoded_into_hash(b"Entropy::Privacy"),
+                encoded_into_hash(&expected_account),
+                encoded_into_hash(&expected_private),
             ];
             for (n, (actual_topic, expected_topic)) in
                 event.topics.iter().zip(expected_topics).enumerate()
@@ -913,6 +1007,54 @@ mod entropy {
             assert_redeem_event(
                 &emitted_events[1],
                 50,
+            );
+        }
+
+        #[ink::test]
+        fn account_private_works() {
+            // Constructor works.
+            let mut entropy = Entropy::new(100);
+
+            // Transfer event triggered during initial construction.
+            let accounts =
+                ink_env::test::default_accounts::<ink_env::DefaultEnvironment>()
+                    .expect("Cannot get accounts");
+
+            assert_eq!(entropy.is_account_private(accounts.alice), false);
+
+            // Set Alice as private
+            assert_eq!(entropy.set_account_private(accounts.alice, true), Ok(()));
+
+            // Check Alice's privateness
+            assert_eq!(entropy.is_account_private(accounts.alice), true);
+
+            // Set Alice's privateness back
+            assert_eq!(entropy.set_account_private(accounts.alice, false), Ok(()));
+
+            // Check Alice's privateness again
+            assert_eq!(entropy.is_account_private(accounts.alice), false);
+
+            // Check events
+            let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
+            assert_eq!(emitted_events.len(), 3);
+
+            // Check first transfer event related to Entropy instantiation.
+            assert_transfer_event(
+                &emitted_events[0],
+                None,
+                Some(accounts.alice),
+                100,
+            );
+            // Check 2nd and 3rd Privacy event
+            assert_privacy_event(
+                &emitted_events[1],
+                accounts.alice,
+                true
+            );
+            assert_privacy_event(
+                &emitted_events[2],
+                accounts.alice,
+                false
             );
         }
 
