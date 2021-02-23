@@ -197,6 +197,14 @@ mod entropy {
         /// Transfer ownership to another account
         #[ink(message)]
         pub fn transfer_ownership(&mut self, new_owner: AccountId) -> Result<()> {
+            let caller = self.env().caller();
+            if caller != self.owner {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::PermissionDenied)
+                });
+                return Err(Error::PermissionDenied);
+            }
+
             if new_owner != AccountId::from([0x0; 32]) {
                 self.owner = new_owner.clone();
             }
