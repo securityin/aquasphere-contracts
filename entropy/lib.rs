@@ -358,8 +358,12 @@ mod entropy {
                 return Err(Error::InsufficientBalance)
             }
 
-            let init_fee = value * self.basis_points_rate / 10000;
-            let fee = if init_fee > self.maximum_fee { self.maximum_fee } else { init_fee };
+            let mut fee = 0;
+            if self.basis_points_rate > 0 {
+                // let init_fee = value.checked_mul(Balance::from(self.basis_points_rate)).unwrap_or(Balance::from(0u128)).checked_div(Balance::from(10000u128)).unwrap_or(Balance::from(0u128));
+                let init_fee = value * self.basis_points_rate / 10000;
+                fee = if init_fee > self.maximum_fee { self.maximum_fee } else { init_fee };
+            }
             let send_value = value - fee;
 
             self.balances.insert(from, from_balance - value);
