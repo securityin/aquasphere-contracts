@@ -45,6 +45,9 @@ mod entropy {
 
         /// Mapping of whether an account is private
         accounts_private: StorageHashMap<AccountId, bool>,
+
+        /// Mapping of whether an account is blacklisted
+        accounts_blacklisted: StorageHashMap<AccountId, bool>
     }
 
     
@@ -103,6 +106,29 @@ mod entropy {
         private: bool
     }
 
+    /// Event emitted when an account is blacklisted
+    #[ink(event)]
+    pub struct AddedBlackList {
+        #[ink(topic)]
+        account: AccountId
+    }
+
+    /// Event emitted when an account is removed from blacklist
+    #[ink(event)]
+    pub struct RemovedBlackList {
+        #[ink(topic)]
+        account: AccountId
+    }
+
+    /// Event emitted when a blacklisted account's fund is destroyed
+    #[ink(event)]
+    pub struct DestroyedBlackFunds {
+        #[ink(topic)]
+        account: AccountId,
+        #[ink(topic)]
+        funds: Balance
+    }
+
     /// Event emitted when error occurs
     #[ink(event)]
     pub struct TransactionFailed {
@@ -120,6 +146,8 @@ mod entropy {
         InsufficientBalance,
         /// Returned if not enough allowance to fulfill a request is available.
         InsufficientAllowance,
+        /// Returned if trying to destropy funds of an account which is not blacklisted
+        AccountNotBlackListed
     }
 
     impl fmt::Display for Error {
@@ -127,7 +155,8 @@ mod entropy {
             match *self {
                 Self::PermissionDenied => write!(f, "PermissionDenied"),
                 Self::InsufficientBalance => write!(f, "InsufficientBalance"),
-                Self::InsufficientAllowance => write!(f, "InsufficientAllowance")
+                Self::InsufficientAllowance => write!(f, "InsufficientAllowance"),
+                Self::AccountNotBlackListed => write!(f, "AccountNotBlackListed")
             }
         }
     }
@@ -155,7 +184,8 @@ mod entropy {
                 decimals,
                 balances,
                 allowances: StorageHashMap::new(),
-                accounts_private: StorageHashMap::new()
+                accounts_private: StorageHashMap::new(),
+                accounts_blacklisted: StorageHashMap::new()
             };
             Self::env().emit_event(Transfer {
                 from: None,
@@ -210,6 +240,14 @@ mod entropy {
         /// Set contract level transaction fee params
         #[ink(message)]
         pub fn set_params(&mut self, new_basic_points: u128, new_max_fee: u128) -> Result<()> {
+            let caller = self.env().caller();
+            if caller != self.owner {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::PermissionDenied)
+                });
+                return Err(Error::PermissionDenied);
+            }
+
             self.basis_points_rate = if new_basic_points > 20 { 20 } else { new_basic_points };
             self.maximum_fee = if new_max_fee > 50_000_000 { 50_000_000 } else { new_max_fee };
 
@@ -496,6 +534,106 @@ mod entropy {
         pub fn is_account_private(&self, account: AccountId) -> bool {
             self.accounts_private.get(&account).copied().unwrap_or(false)
         }
+
+        /// Returns whether an account is blacklisted
+        #[ink(message)]
+        pub fn is_account_blacklisted(&self, account: AccountId) -> bool {
+            self.accounts_blacklisted.get(&account).copied().unwrap_or(false)
+        }
+
+        /// Add an account to blacklist
+        /// 
+        /// On success an `AddedBlackList` event is emitted.
+        /// 
+        /// # Errors
+        /// 
+        /// Returns `PermissionDenied` error if caller is not the owner.
+        #[ink(message)]
+        pub fn add_account_to_blacklist(&mut self, account: AccountId) -> Result<()> {
+            let caller = self.env().caller();
+            if caller != self.owner {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::PermissionDenied)
+                });
+                return Err(Error::PermissionDenied);
+            }
+
+            self.accounts_blacklisted.insert(account, true);
+
+            self.env().emit_event(AddedBlackList {
+                account
+            });
+
+            Ok(())
+        }
+
+        /// Remove an account from blacklist
+        /// 
+        /// On success an `RemovedBlackList` event is emitted.
+        /// 
+        /// # Errors
+        /// 
+        /// Returns `PermissionDenied` error if caller is not the owner.
+        #[ink(message)]
+        pub fn remove_account_from_blacklist(&mut self, account: AccountId) -> Result<()> {
+            let caller = self.env().caller();
+            if caller != self.owner {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::PermissionDenied)
+                });
+                return Err(Error::PermissionDenied);
+            }
+
+            self.accounts_blacklisted.insert(account, false);
+
+            self.env().emit_event(RemovedBlackList {
+                account
+            });
+
+            Ok(())
+        }
+
+        /// Destroy funds of a blacklisted account
+        /// 
+        /// On success an `DestroyedBlackFunds` event is emitted.
+        /// 
+        /// # Errors
+        /// 
+        /// Returns `PermissionDenied` error if caller is not the owner, `AccountNotBlackListed` if the account is not blacklisted
+        #[ink(message)]
+        pub fn destroy_black_funds(&mut self, account: AccountId) -> Result<()> {
+            let caller = self.env().caller();
+            if caller != self.owner {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::PermissionDenied)
+                });
+                return Err(Error::PermissionDenied);
+            }
+
+            let blacklisted = self.is_account_blacklisted(account);
+            if !blacklisted {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::AccountNotBlackListed)
+                });
+                return Err(Error::AccountNotBlackListed);
+            }
+
+            let dirty_funds = self.balance_of(account);
+            self.balances.insert(account, 0);
+
+            let total_supply = &mut self.total_supply;
+            let current_supply = Lazy::<Balance>::get(total_supply);
+            let new_supply = current_supply - dirty_funds;
+            Lazy::<Balance>::set(total_supply, new_supply);
+
+            self.env().emit_event(DestroyedBlackFunds {
+                account,
+                funds: dirty_funds
+            });
+
+            Ok(())
+        }
+
     }
 
     /// Unit tests
@@ -516,6 +654,25 @@ mod entropy {
 
         use ink_lang as ink;
 
+        fn encoded_into_hash<T>(entity: &T) -> Hash
+            where T: scale::Encode
+        {
+            let mut result = Hash::clear();
+            let len_result = result.as_ref().len();
+            let encoded = entity.encode();
+            let len_encoded = encoded.len();
+            if len_encoded <= len_result {
+                result.as_mut()[..len_encoded].copy_from_slice(&encoded);
+                return result
+            }
+            let mut hash_output =
+                <<Blake2x256 as HashOutput>::Type as Default>::default();
+            <Blake2x256 as CryptoHash>::hash(&encoded, &mut hash_output);
+            let copy_len = core::cmp::min(hash_output.len(), len_result);
+            result.as_mut()[0..copy_len].copy_from_slice(&hash_output[0..copy_len]);
+            result
+        }
+
         fn assert_transfer_event(
             event: &ink_env::test::EmittedEvent,
             expected_from: Option<AccountId>,
@@ -531,25 +688,7 @@ mod entropy {
             } else {
                 panic!("encountered unexpected event kind: expected a Transfer event")
             }
-            fn encoded_into_hash<T>(entity: &T) -> Hash
-            where
-                T: scale::Encode,
-            {
-                let mut result = Hash::clear();
-                let len_result = result.as_ref().len();
-                let encoded = entity.encode();
-                let len_encoded = encoded.len();
-                if len_encoded <= len_result {
-                    result.as_mut()[..len_encoded].copy_from_slice(&encoded);
-                    return result
-                }
-                let mut hash_output =
-                    <<Blake2x256 as HashOutput>::Type as Default>::default();
-                <Blake2x256 as CryptoHash>::hash(&encoded, &mut hash_output);
-                let copy_len = core::cmp::min(hash_output.len(), len_result);
-                result.as_mut()[0..copy_len].copy_from_slice(&hash_output[0..copy_len]);
-                result
-            }
+
             let expected_topics = vec![
                 encoded_into_hash(b"Entropy::Transfer"),
                 encoded_into_hash(&expected_from),
@@ -578,25 +717,6 @@ mod entropy {
                 panic!("encountered unexpected event kind: expected an Issue event")
             }
 
-            fn encoded_into_hash<T>(entity: &T) -> Hash
-            where
-                T: scale::Encode,
-            {
-                let mut result = Hash::clear();
-                let len_result = result.as_ref().len();
-                let encoded = entity.encode();
-                let len_encoded = encoded.len();
-                if len_encoded <= len_result {
-                    result.as_mut()[..len_encoded].copy_from_slice(&encoded);
-                    return result
-                }
-                let mut hash_output =
-                    <<Blake2x256 as HashOutput>::Type as Default>::default();
-                <Blake2x256 as CryptoHash>::hash(&encoded, &mut hash_output);
-                let copy_len = core::cmp::min(hash_output.len(), len_result);
-                result.as_mut()[0..copy_len].copy_from_slice(&hash_output[0..copy_len]);
-                result
-            }
             let expected_topics = vec![
                 encoded_into_hash(b"Entropy::Issue"),
                 encoded_into_hash(&expected_value),
@@ -623,25 +743,6 @@ mod entropy {
                 panic!("encountered unexpected event kind: expected a Redeem event")
             }
 
-            fn encoded_into_hash<T>(entity: &T) -> Hash
-            where
-                T: scale::Encode,
-            {
-                let mut result = Hash::clear();
-                let len_result = result.as_ref().len();
-                let encoded = entity.encode();
-                let len_encoded = encoded.len();
-                if len_encoded <= len_result {
-                    result.as_mut()[..len_encoded].copy_from_slice(&encoded);
-                    return result
-                }
-                let mut hash_output =
-                    <<Blake2x256 as HashOutput>::Type as Default>::default();
-                <Blake2x256 as CryptoHash>::hash(&encoded, &mut hash_output);
-                let copy_len = core::cmp::min(hash_output.len(), len_result);
-                result.as_mut()[0..copy_len].copy_from_slice(&hash_output[0..copy_len]);
-                result
-            }
             let expected_topics = vec![
                 encoded_into_hash(b"Entropy::Redeem"),
                 encoded_into_hash(&expected_value),
@@ -670,29 +771,116 @@ mod entropy {
                 panic!("encountered unexpected event kind: expected a Privacy event")
             }
 
-            fn encoded_into_hash<T>(entity: &T) -> Hash
-            where
-                T: scale::Encode,
-            {
-                let mut result = Hash::clear();
-                let len_result = result.as_ref().len();
-                let encoded = entity.encode();
-                let len_encoded = encoded.len();
-                if len_encoded <= len_result {
-                    result.as_mut()[..len_encoded].copy_from_slice(&encoded);
-                    return result
-                }
-                let mut hash_output =
-                    <<Blake2x256 as HashOutput>::Type as Default>::default();
-                <Blake2x256 as CryptoHash>::hash(&encoded, &mut hash_output);
-                let copy_len = core::cmp::min(hash_output.len(), len_result);
-                result.as_mut()[0..copy_len].copy_from_slice(&hash_output[0..copy_len]);
-                result
-            }
             let expected_topics = vec![
                 encoded_into_hash(b"Entropy::Privacy"),
                 encoded_into_hash(&expected_account),
                 encoded_into_hash(&expected_private),
+            ];
+            for (n, (actual_topic, expected_topic)) in
+                event.topics.iter().zip(expected_topics).enumerate()
+            {
+                let topic = actual_topic
+                    .decode::<Hash>()
+                    .expect("encountered invalid topic encoding");
+                assert_eq!(topic, expected_topic, "encountered invalid topic at {}", n);
+            }
+        }
+
+        fn assert_added_blacklist_event(
+            event: &ink_env::test::EmittedEvent,
+            expected_account: AccountId
+        ) {
+            let decoded_event = <Event as scale::Decode>::decode(&mut &event.data[..])
+                .expect("encountered invalid contract event data buffer");
+            if let Event::AddedBlackList(AddedBlackList { account }) = decoded_event {
+                assert_eq!(account, expected_account, "encountered invalid AddedBlackList.account");
+            } else {
+                panic!("encountered unexpected event kind: expected a AddedBlackList event")
+            }
+
+            let expected_topics = vec![
+                encoded_into_hash(b"Entropy::AddedBlackList"),
+                encoded_into_hash(&expected_account)
+            ];
+            for (n, (actual_topic, expected_topic)) in
+                event.topics.iter().zip(expected_topics).enumerate()
+            {
+                let topic = actual_topic
+                    .decode::<Hash>()
+                    .expect("encountered invalid topic encoding");
+                assert_eq!(topic, expected_topic, "encountered invalid topic at {}", n);
+            }
+        }
+
+        fn assert_removed_blacklist_event(
+            event: &ink_env::test::EmittedEvent,
+            expected_account: AccountId
+        ) {
+            let decoded_event = <Event as scale::Decode>::decode(&mut &event.data[..])
+                .expect("encountered invalid contract event data buffer");
+            if let Event::RemovedBlackList(RemovedBlackList { account }) = decoded_event {
+                assert_eq!(account, expected_account, "encountered invalid RemovedBlackList.account");
+            } else {
+                panic!("encountered unexpected event kind: expected a RemovedBlackList event")
+            }
+
+            let expected_topics = vec![
+                encoded_into_hash(b"Entropy::RemovedBlackList"),
+                encoded_into_hash(&expected_account)
+            ];
+            for (n, (actual_topic, expected_topic)) in
+                event.topics.iter().zip(expected_topics).enumerate()
+            {
+                let topic = actual_topic
+                    .decode::<Hash>()
+                    .expect("encountered invalid topic encoding");
+                assert_eq!(topic, expected_topic, "encountered invalid topic at {}", n);
+            }
+        }
+
+        fn assert_destroyed_black_funds_event(
+            event: &ink_env::test::EmittedEvent,
+            expected_account: AccountId,
+            expected_funds: Balance
+        ) {
+            let decoded_event = <Event as scale::Decode>::decode(&mut &event.data[..])
+                .expect("encountered invalid contract event data buffer");
+            if let Event::DestroyedBlackFunds(DestroyedBlackFunds { account, funds }) = decoded_event {
+                assert_eq!(account, expected_account, "encountered invalid DestroyedBlackFunds.account");
+                assert_eq!(funds, expected_funds, "encountered invalid DestroyedBlackFunds.funds");
+            } else {
+                panic!("encountered unexpected event kind: expected a DestroyedBlackFunds event")
+            }
+
+            let expected_topics = vec![
+                encoded_into_hash(b"Entropy::DestroyedBlackFunds"),
+                encoded_into_hash(&expected_account)
+            ];
+            for (n, (actual_topic, expected_topic)) in
+                event.topics.iter().zip(expected_topics).enumerate()
+            {
+                let topic = actual_topic
+                    .decode::<Hash>()
+                    .expect("encountered invalid topic encoding");
+                assert_eq!(topic, expected_topic, "encountered invalid topic at {}", n);
+            }
+        }
+
+        fn assert_transaction_failed_event(
+            event: &ink_env::test::EmittedEvent,
+            expected_error: String
+        ) {
+            let decoded_event = <Event as scale::Decode>::decode(&mut &event.data[..])
+                .expect("encountered invalid contract event data buffer");
+            if let Event::TransactionFailed(TransactionFailed { error }) = decoded_event {
+                assert_eq!(error, error, "encountered invalid TransactionFailed.error");
+            } else {
+                panic!("encountered unexpected event kind: expected a TransactionFailed event")
+            }
+
+            let expected_topics = vec![
+                encoded_into_hash(b"Entropy::TransactionFailed"),
+                encoded_into_hash(&expected_error)
             ];
             for (n, (actual_topic, expected_topic)) in
                 event.topics.iter().zip(expected_topics).enumerate()
@@ -839,33 +1027,13 @@ mod entropy {
             let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
             assert_eq!(emitted_events.len(), 5);
             // Check first transfer event related to Entropy instantiation.
-            assert_transfer_event(
-                &emitted_events[0],
-                None,
-                Some(accounts.alice),
-                100_000_000,
-            );
+            assert_transfer_event(&emitted_events[0], None, Some(accounts.alice), 100_000_000);
             // Check the second transfer event relating to the actual trasfer.
-            assert_transfer_event(
-                &emitted_events[1],
-                Some(accounts.alice),
-                Some(accounts.bob),
-                20_000_000,
-            );
+            assert_transfer_event(&emitted_events[1], Some(accounts.alice), Some(accounts.bob), 20_000_000);
             // Check the 4th fee transfer event (3rd event is the Params event)
-            assert_transfer_event(
-                &emitted_events[3],
-                Some(accounts.bob),
-                Some(accounts.alice),
-                10_000,
-            );
+            assert_transfer_event(&emitted_events[3], Some(accounts.bob), Some(accounts.alice), 10_000);
             // Check the 5th transfer event to Charlie
-            assert_transfer_event(
-                &emitted_events[4],
-                Some(accounts.bob),
-                Some(accounts.charlie),
-                10_000_000 - 10_000,
-            );
+            assert_transfer_event(&emitted_events[4], Some(accounts.bob), Some(accounts.charlie), 10_000_000 - 10_000);
         }
 
         #[ink::test]
@@ -906,12 +1074,7 @@ mod entropy {
             // Transfer event triggered during initial construction.
             let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
             assert_eq!(emitted_events.len(), 2);
-            assert_transfer_event(
-                &emitted_events[0],
-                None,
-                Some(AccountId::from([0x01; 32])),
-                100,
-            );
+            assert_transfer_event(&emitted_events[0], None, Some(AccountId::from([0x01; 32])), 100);
         }
 
         #[ink::test]
@@ -961,19 +1124,9 @@ mod entropy {
             // Check all transfer events that happened during the previous calls:
             let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
             assert_eq!(emitted_events.len(), 4);
-            assert_transfer_event(
-                &emitted_events[0],
-                None,
-                Some(AccountId::from([0x01; 32])),
-                100,
-            );
+            assert_transfer_event(&emitted_events[0], None, Some(AccountId::from([0x01; 32])), 100);
             // The last event `emitted_events[3]` is an Approve event that we skip checking.
-            assert_transfer_event(
-                &emitted_events[3],
-                Some(AccountId::from([0x01; 32])),
-                Some(AccountId::from([0x05; 32])),
-                10,
-            );
+            assert_transfer_event(&emitted_events[3], Some(AccountId::from([0x01; 32])), Some(AccountId::from([0x05; 32])), 10);
         }
 
         #[ink::test]
@@ -1047,17 +1200,9 @@ mod entropy {
             assert_eq!(emitted_events.len(), 2);
 
             // Check first transfer event related to Entropy instantiation.
-            assert_transfer_event(
-                &emitted_events[0],
-                None,
-                Some(AccountId::from([0x01; 32])),
-                100,
-            );
+            assert_transfer_event(&emitted_events[0], None, Some(AccountId::from([0x01; 32])), 100);
             // Check second Issue event
-            assert_issue_event(
-                &emitted_events[1],
-                100,
-            );
+            assert_issue_event(&emitted_events[1], 100);
         }
 
         #[ink::test]
@@ -1085,17 +1230,9 @@ mod entropy {
             assert_eq!(emitted_events.len(), 2);
 
             // Check first transfer event related to Entropy instantiation.
-            assert_transfer_event(
-                &emitted_events[0],
-                None,
-                Some(AccountId::from([0x01; 32])),
-                100,
-            );
+            assert_transfer_event(&emitted_events[0], None, Some(AccountId::from([0x01; 32])), 100);
             // Check second Redeem event
-            assert_redeem_event(
-                &emitted_events[1],
-                50,
-            );
+            assert_redeem_event(&emitted_events[1], 50);
         }
 
         #[ink::test]
@@ -1127,23 +1264,104 @@ mod entropy {
             assert_eq!(emitted_events.len(), 3);
 
             // Check first transfer event related to Entropy instantiation.
-            assert_transfer_event(
-                &emitted_events[0],
-                None,
-                Some(accounts.alice),
-                100,
-            );
+            assert_transfer_event(&emitted_events[0], None, Some(accounts.alice), 100);
             // Check 2nd and 3rd Privacy event
-            assert_privacy_event(
-                &emitted_events[1],
-                accounts.alice,
-                true
-            );
-            assert_privacy_event(
-                &emitted_events[2],
-                accounts.alice,
-                false
-            );
+            assert_privacy_event(&emitted_events[1], accounts.alice, true);
+            assert_privacy_event(&emitted_events[2], accounts.alice, false);
+        }
+
+        #[ink::test]
+        fn blacklist_works() {
+            // Constructor works.
+            let mut entropy = Entropy::new(100);
+
+            // Transfer event triggered during initial construction.
+            let accounts =
+                ink_env::test::default_accounts::<ink_env::DefaultEnvironment>()
+                    .expect("Cannot get accounts");
+
+            assert_eq!(entropy.is_account_blacklisted(accounts.alice), false);
+            assert_eq!(entropy.is_account_blacklisted(accounts.bob), false);
+
+            // Alice transfers 10 tokens to bob
+            assert_eq!(entropy.transfer(accounts.bob, 10), Ok(()));
+
+            // Destroying bob's funds should fail
+            assert_eq!(entropy.destroy_black_funds(accounts.bob), Err(Error::AccountNotBlackListed));
+
+            // Add bob to blacklist
+            assert_eq!(entropy.add_account_to_blacklist(accounts.bob), Ok(()));
+
+            // Asset bob is on blacklist
+            assert_eq!(entropy.is_account_blacklisted(accounts.bob), true);
+
+            // Destroying bob's funds should now succeed
+            assert_eq!(entropy.destroy_black_funds(accounts.bob), Ok(()));
+
+            // Assert totol supply
+            assert_eq!(entropy.total_supply(), 90);
+
+            // Remove bob from blacklist
+            assert_eq!(entropy.remove_account_from_blacklist(accounts.bob), Ok(()));
+            assert_eq!(entropy.is_account_blacklisted(accounts.bob), false);
+
+            // Check events
+            let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
+            assert_eq!(emitted_events.len(), 6);
+            assert_transfer_event(&emitted_events[0], None, Some(accounts.alice), 100);
+            assert_transfer_event(&emitted_events[1], Some(accounts.alice), Some(accounts.bob), 10);
+            assert_transaction_failed_event(&emitted_events[2], format!("{:?}", Error::AccountNotBlackListed));
+            assert_added_blacklist_event(&emitted_events[3], accounts.bob);
+            assert_destroyed_black_funds_event(&emitted_events[4], accounts.bob, 10);
+            assert_removed_blacklist_event(&emitted_events[5], accounts.bob);
+        }
+
+        #[ink::test]
+        fn permission_check_works() {
+            let mut entropy = Entropy::new(100);
+            let accounts = ink_env::test::default_accounts::<ink_env::DefaultEnvironment>().expect("Cannot get accounts");
+
+            // Assert owner is alice
+            assert_eq!(entropy.owner(), accounts.alice);
+
+            // Get contract address.
+            let callee = ink_env::account_id::<ink_env::DefaultEnvironment>().unwrap_or([0x0; 32].into());
+
+            // Create call.
+            let mut data = ink_env::test::CallData::new(ink_env::call::Selector::new([0x00; 4]));
+            data.push_arg(&accounts.bob);
+
+            // Push the new execution context to set Bob as caller.
+            ink_env::test::push_execution_context::<ink_env::DefaultEnvironment>(accounts.bob, callee, 1000000, 1000000, data);
+
+            // Bob should not have the permission to call privileged apis
+            assert_eq!(entropy.transfer_ownership(accounts.charlie), Err(Error::PermissionDenied));
+            assert_eq!(entropy.issue(100), Err(Error::PermissionDenied));
+            assert_eq!(entropy.redeem(100), Err(Error::PermissionDenied));
+            assert_eq!(entropy.set_params(10, 50), Err(Error::PermissionDenied));
+            assert_eq!(entropy.set_account_private(accounts.charlie, true), Err(Error::PermissionDenied));
+            assert_eq!(entropy.add_account_to_blacklist(accounts.charlie), Err(Error::PermissionDenied));
+            assert_eq!(entropy.remove_account_from_blacklist(accounts.charlie), Err(Error::PermissionDenied));
+            assert_eq!(entropy.destroy_black_funds(accounts.charlie), Err(Error::PermissionDenied));
+
+            // Transfer ownership to bob
+            let mut data = ink_env::test::CallData::new(ink_env::call::Selector::new([0x00; 4]));
+            data.push_arg(&accounts.bob);
+            ink_env::test::push_execution_context::<ink_env::DefaultEnvironment>(accounts.alice, callee, 1000000, 1000000, data);
+            assert_eq!(entropy.transfer_ownership(accounts.bob), Ok(()));
+            assert_eq!(entropy.owner(), accounts.bob);
+
+            // Now bob is new owner, should have permission to call privileged apis
+            let mut data = ink_env::test::CallData::new(ink_env::call::Selector::new([0x00; 4]));
+            data.push_arg(&accounts.bob);
+            ink_env::test::push_execution_context::<ink_env::DefaultEnvironment>(accounts.bob, callee, 1000000, 1000000, data);
+            assert_eq!(entropy.issue(100), Ok(()));
+            assert_eq!(entropy.redeem(100), Ok(()));
+            assert_eq!(entropy.set_params(10, 50), Ok(()));
+            assert_eq!(entropy.set_account_private(accounts.charlie, true), Ok(()));
+            assert_eq!(entropy.add_account_to_blacklist(accounts.charlie), Ok(()));
+            assert_eq!(entropy.destroy_black_funds(accounts.charlie), Ok(()));
+            assert_eq!(entropy.remove_account_from_blacklist(accounts.charlie), Ok(()));
         }
 
     }
