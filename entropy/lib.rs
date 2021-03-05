@@ -690,10 +690,22 @@ mod entropy {
             }
 
             let expected_topics = vec![
-                encoded_into_hash(b"Entropy::Transfer"),
-                encoded_into_hash(&expected_from),
-                encoded_into_hash(&expected_to),
-                encoded_into_hash(&expected_value),
+                encoded_into_hash(&PrefixedValue {
+                    value: b"Entropy::Transfer",
+                    prefix: b"",
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::Transfer::from",
+                    value: &expected_from,
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::Transfer::to",
+                    value: &expected_to,
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::Transfer::value",
+                    value: &expected_value,
+                })
             ];
             for (n, (actual_topic, expected_topic)) in
                 event.topics.iter().zip(expected_topics).enumerate()
@@ -718,8 +730,14 @@ mod entropy {
             }
 
             let expected_topics = vec![
-                encoded_into_hash(b"Entropy::Issue"),
-                encoded_into_hash(&expected_value),
+                encoded_into_hash(&PrefixedValue {
+                    value: b"Entropy::Issue",
+                    prefix: b"",
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::Issue::amount",
+                    value: &expected_value,
+                })
             ];
             for (n, (actual_topic, expected_topic)) in
                 event.topics.iter().zip(expected_topics).enumerate()
@@ -744,8 +762,14 @@ mod entropy {
             }
 
             let expected_topics = vec![
-                encoded_into_hash(b"Entropy::Redeem"),
-                encoded_into_hash(&expected_value),
+                encoded_into_hash(&PrefixedValue {
+                    value: b"Entropy::Redeem",
+                    prefix: b"",
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::Redeem::amount",
+                    value: &expected_value,
+                })
             ];
             for (n, (actual_topic, expected_topic)) in
                 event.topics.iter().zip(expected_topics).enumerate()
@@ -772,9 +796,18 @@ mod entropy {
             }
 
             let expected_topics = vec![
-                encoded_into_hash(b"Entropy::Privacy"),
-                encoded_into_hash(&expected_account),
-                encoded_into_hash(&expected_private),
+                encoded_into_hash(&PrefixedValue {
+                    value: b"Entropy::Privacy",
+                    prefix: b"",
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::Privacy::account",
+                    value: &expected_account,
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::Privacy::private",
+                    value: &expected_private,
+                })
             ];
             for (n, (actual_topic, expected_topic)) in
                 event.topics.iter().zip(expected_topics).enumerate()
@@ -799,8 +832,14 @@ mod entropy {
             }
 
             let expected_topics = vec![
-                encoded_into_hash(b"Entropy::AddedBlackList"),
-                encoded_into_hash(&expected_account)
+                encoded_into_hash(&PrefixedValue {
+                    value: b"Entropy::AddedBlackList",
+                    prefix: b"",
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::AddedBlackList::account",
+                    value: &expected_account,
+                })
             ];
             for (n, (actual_topic, expected_topic)) in
                 event.topics.iter().zip(expected_topics).enumerate()
@@ -825,8 +864,14 @@ mod entropy {
             }
 
             let expected_topics = vec![
-                encoded_into_hash(b"Entropy::RemovedBlackList"),
-                encoded_into_hash(&expected_account)
+                encoded_into_hash(&PrefixedValue {
+                    value: b"Entropy::RemovedBlackList",
+                    prefix: b"",
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::RemovedBlackList::account",
+                    value: &expected_account,
+                })
             ];
             for (n, (actual_topic, expected_topic)) in
                 event.topics.iter().zip(expected_topics).enumerate()
@@ -853,8 +898,18 @@ mod entropy {
             }
 
             let expected_topics = vec![
-                encoded_into_hash(b"Entropy::DestroyedBlackFunds"),
-                encoded_into_hash(&expected_account)
+                encoded_into_hash(&PrefixedValue {
+                    value: b"Entropy::DestroyedBlackFunds",
+                    prefix: b"",
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::DestroyedBlackFunds::account",
+                    value: &expected_account,
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::DestroyedBlackFunds::funds",
+                    value: &expected_funds,
+                })
             ];
             for (n, (actual_topic, expected_topic)) in
                 event.topics.iter().zip(expected_topics).enumerate()
@@ -879,8 +934,14 @@ mod entropy {
             }
 
             let expected_topics = vec![
-                encoded_into_hash(b"Entropy::TransactionFailed"),
-                encoded_into_hash(&expected_error)
+                encoded_into_hash(&PrefixedValue {
+                    value: b"Entropy::TransactionFailed",
+                    prefix: b"",
+                }),
+                encoded_into_hash(&PrefixedValue {
+                    prefix: b"Entropy::TransactionFailed::error",
+                    value: &expected_error,
+                })
             ];
             for (n, (actual_topic, expected_topic)) in
                 event.topics.iter().zip(expected_topics).enumerate()
@@ -1366,4 +1427,25 @@ mod entropy {
 
     }
 
+    /// For calculating the event topic hash.
+    struct PrefixedValue<'a, 'b, T> {
+        pub prefix: &'a [u8],
+        pub value: &'b T,
+    }
+
+    impl<X> scale::Encode for PrefixedValue<'_, '_, X>
+    where
+        X: scale::Encode,
+    {
+        #[inline]
+        fn size_hint(&self) -> usize {
+            self.prefix.size_hint() + self.value.size_hint()
+        }
+
+        #[inline]
+        fn encode_to<T: scale::Output + ?Sized>(&self, dest: &mut T) {
+            self.prefix.encode_to(dest);
+            self.value.encode_to(dest);
+        }
+    }
 }
