@@ -146,6 +146,8 @@ mod entropy {
         InsufficientBalance,
         /// Returned if not enough allowance to fulfill a request is available.
         InsufficientAllowance,
+        /// Returned if trying to transfer funds from a blacklisted account
+        AccountBlackListed,
         /// Returned if trying to destropy funds of an account which is not blacklisted
         AccountNotBlackListed
     }
@@ -156,6 +158,7 @@ mod entropy {
                 Self::PermissionDenied => write!(f, "PermissionDenied"),
                 Self::InsufficientBalance => write!(f, "InsufficientBalance"),
                 Self::InsufficientAllowance => write!(f, "InsufficientAllowance"),
+                Self::AccountBlackListed => write!(f, "AccountBlackListed"),
                 Self::AccountNotBlackListed => write!(f, "AccountNotBlackListed")
             }
         }
@@ -310,11 +313,23 @@ mod entropy {
         ///
         /// # Errors
         ///
+        ///  Returns `AccountBlackListed` error if the caller's account is blacklisted.
+        /// 
         /// Returns `InsufficientBalance` error if there are not enough tokens on
         /// the caller's account balance.
+        /// 
         #[ink(message)]
         pub fn transfer(&mut self, to: AccountId, value: Balance) -> Result<()> {
             let from = self.env().caller();
+
+            let blacklisted = self.is_account_blacklisted(from);
+            if blacklisted {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::AccountBlackListed)
+                });
+                return Err(Error::AccountBlackListed);
+            }
+
             self.transfer_from_to(from, to, value)
         }
 
@@ -345,6 +360,8 @@ mod entropy {
         ///
         /// # Errors
         ///
+        /// Returns `AccountBlackListed` error if the `from` account is blacklisted.
+        /// 
         /// Returns `InsufficientAllowance` error if there are not enough tokens allowed
         /// for the caller to withdraw from `from`.
         ///
@@ -358,6 +375,14 @@ mod entropy {
             value: Balance,
         ) -> Result<()> {
             env::debug_println(&format!("Entropy: Trying to transfer 0x{:x} tokens from {:?} to {:?}", value, from, to));
+
+            let blacklisted = self.is_account_blacklisted(from);
+            if blacklisted {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::AccountBlackListed)
+                });
+                return Err(Error::AccountBlackListed);
+            }
 
             let caller = self.env().caller();
             let allowance = self.allowance(from, caller);
@@ -1353,8 +1378,11 @@ mod entropy {
             // Add bob to blacklist
             assert_eq!(entropy.add_account_to_blacklist(accounts.bob), Ok(()));
 
-            // Asset bob is on blacklist
+            // Assert bob is on blacklist
             assert_eq!(entropy.is_account_blacklisted(accounts.bob), true);
+
+            // Bob should be forbidden to transfer tokens
+            assert_eq!(entropy.transfer_from(accounts.bob, accounts.charlie, 10), Err(Error::AccountBlackListed));
 
             // Destroying bob's funds should now succeed
             assert_eq!(entropy.destroy_black_funds(accounts.bob), Ok(()));
@@ -1368,13 +1396,14 @@ mod entropy {
 
             // Check events
             let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
-            assert_eq!(emitted_events.len(), 6);
+            assert_eq!(emitted_events.len(), 7);
             assert_transfer_event(&emitted_events[0], None, Some(accounts.alice), 100);
             assert_transfer_event(&emitted_events[1], Some(accounts.alice), Some(accounts.bob), 10);
             assert_transaction_failed_event(&emitted_events[2], format!("{:?}", Error::AccountNotBlackListed));
             assert_added_blacklist_event(&emitted_events[3], accounts.bob);
-            assert_destroyed_black_funds_event(&emitted_events[4], accounts.bob, 10);
-            assert_removed_blacklist_event(&emitted_events[5], accounts.bob);
+            assert_transaction_failed_event(&emitted_events[4], format!("{:?}", Error::AccountBlackListed));
+            assert_destroyed_black_funds_event(&emitted_events[5], accounts.bob, 10);
+            assert_removed_blacklist_event(&emitted_events[6], accounts.bob);
         }
 
         #[ink::test]
