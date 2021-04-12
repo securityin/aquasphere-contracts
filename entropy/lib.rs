@@ -333,6 +333,32 @@ mod entropy {
             self.transfer_from_to(from, to, value)
         }
 
+        /// Transfers `value` amount of tokens from the caller's account to account `to`.
+        ///
+        /// On success a `Transfer` event is emitted.
+        ///
+        /// # Errors
+        ///
+        ///  Returns `AccountBlackListed` error if the caller's account is blacklisted.
+        ///
+        /// Returns `InsufficientBalance` error if there are not enough tokens on
+        /// the caller's account balance.
+        ///
+        #[ink(message)]
+        pub fn transfer_extra(&mut self, to: AccountId, value: Balance, extra: String) -> Result<()> {
+            let from = self.env().caller();
+
+            let blacklisted = self.is_account_blacklisted(from);
+            if blacklisted {
+                self.env().emit_event(TransactionFailed {
+                    error: format!("{:?}", Error::AccountBlackListed)
+                });
+                return Err(Error::AccountBlackListed);
+            }
+
+            self.transfer_from_to(from, to, value)
+        }
+
         /// Allows `spender` to withdraw from the caller's account multiple times, up to
         /// the `value` amount.
         ///
@@ -409,7 +435,7 @@ mod entropy {
             &mut self,
             from: AccountId,
             to: AccountId,
-            value: Balance,
+            value: Balance
         ) -> Result<()> {
             env::debug_println(&format!("Entropy: Transferring 0x{:x} tokens from {:?} to {:?}", value, from, to));
 
