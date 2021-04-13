@@ -319,7 +319,7 @@ mod entropy {
         /// the caller's account balance.
         /// 
         #[ink(message)]
-        pub fn transfer(&mut self, to: AccountId, value: Balance, extra: Option<[u8;32]>) -> Result<()> {
+        pub fn transfer(&mut self, to: AccountId, value: Balance, extra: Option<String>) -> Result<()> {
             let from = self.env().caller();
 
             let blacklisted = self.is_account_blacklisted(from);
